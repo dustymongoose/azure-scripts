@@ -1,12 +1,10 @@
 #!/bin/bash
 
-# Define variables for existing disk encryption set, Azure Key Vault, resource group, and subscription
+# Define variables
 disk_encryption_set_id="existing_disk_encryption_set_id"
 key_vault_id="existing_key_vault_id"
 resource_group="your_resource_group_name"
 subscription_id="your_subscription_id"
-
-# Path to the text file containing VM names
 vm_list_file="vm_names.txt"
 
 # Function to check if VM is deallocated
@@ -20,14 +18,17 @@ is_vm_deallocated() {
 while IFS= read -r vm_name; do
     (
         echo "Processing VM: $vm_name"
-
-        # Check if VM is deallocated
         echo "Checking if VM is deallocated..."
+        local retries=0
         while ! is_vm_deallocated "$vm_name"; do
             echo "VM is still running. Waiting..."
             sleep 10
+            ((retries++))
+            if [[ $retries -eq 5 ]]; then
+                echo "Failed to deallocate VM after $retries attempts. Exiting."
+                exit 1
+            fi
         done
-
         echo "VM has been deallocated."
 
         # Power off the VM
@@ -86,5 +87,4 @@ while IFS= read -r vm_name; do
     ) &
 done < "$vm_list_file"
 
-# Wait for all background processes to finish
 wait
