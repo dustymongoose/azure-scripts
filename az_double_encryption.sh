@@ -1,85 +1,67 @@
 #!/bin/bash
 
 # Define variables
-disk_encryption_set_id="existing_disk_encryption_set_id"
-key_vault_id="existing_key_vault_id"
-resource_group="your_resource_group_name"
-subscription_id="your_subscription_id"
+disk_encryption_set_id="full id of disk encryption set"
+key_vault_id="full id of key vault"
+resource_group="name of resource group"
+subscription_id="name of subscription"
 vm_list_file="vm_names.txt"
 
+
 # Function to check if VM is deallocated
-is_vm_deallocated() {
+is_vm_stopped() {
     local vm_name="$1"
-    local status=$(az vm show -n "$vm_name" -g "$resource_group" --subscription "$subscription_id" --query "powerState" -o tsv)
-    [[ "$status" == "VM deallocated" ]]
+    local status=$(az vm get-instance-view -n "$vm_name" -g "$resource_group" --subscription "$subscription_id" --query "instanceView.statuses[?starts_with(code,'PowerState/')].code" -o tsv)
+    [[ "$status" == "PowerState/deallocated" ]] || [[ "$status" == "PowerState/stopped" ]]
+}
+
+# Function to check encryption status for a disk
+check_encryption_type() {
+    local disk_name="$1"
+    local encryption_type=$(az disk show --name "$disk_name" --resource-group "$resource_group" --query "encryption.type" -o tsv)
+    echo "Encryption type for disk $disk_name: $encryption_type"
 }
 
 # Loop through each VM in parallel
 while IFS= read -r vm_name; do
     (
         echo "Processing VM: $vm_name"
-        echo "Checking if VM is deallocated..."
-        local retries=0
-        while ! is_vm_deallocated "$vm_name"; do
+
+        # Power off the VM first
+        echo "Stopping VM..."
+        # az vm stop --name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id"
+        az vm deallocate --name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id"
+        echo "VM stopped successfully."
+
+        echo "Checking if VM is stopped..."
+        retries=0
+        while ! is_vm_stopped "$vm_name"; do
             echo "VM is still running. Waiting..."
             sleep 10
             ((retries++))
             if [[ $retries -eq 5 ]]; then
-                echo "Failed to deallocate VM after $retries attempts. Exiting."
+                echo "Failed to stop VM after $retries attempts. Exiting."
                 exit 1
             fi
         done
-        echo "VM has been deallocated."
-
-        # Power off the VM
-        echo "Deallocating VM..."
-        az vm deallocate --name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id"
-        echo "VM deallocated successfully."
+        echo "VM has been stopped."
 
         # Get OS disk ID
-        os_disk_id=$(az vm show -n "$vm_name" -g "$resource_group" --subscription "$subscription_id" --query "storageProfile.osDisk.managedDisk.id" -o tsv)
+        disk_names=$(az disk list -g $resource_group --query "[?contains(managedBy, '$vm_name')].name" -o tsv)
 
-        # Deallocate and detach OS disk
-        echo "Deallocating and detaching OS disk..."
-        az disk update --ids "$os_disk_id" --resource-group "$resource_group" --subscription "$subscription_id" --set osType=None
-        az vm update --name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id" --set storageProfile.osDisk.managedDisk.id=""
-        echo "OS disk deallocated and detached successfully."
+        # Enable double encryption for disks
+        echo "Enabling double encryption for disks..."
+        for disk_name in $disk_names; do
+            az disk update --name $disk_name --resource-group $resource_group  \
+            --encryption-type EncryptionAtRestWithPlatformAndCustomerKeys --disk-encryption-set $disk_encryption_set_id \
+            --subscription $subscription_id
+            echo "Double encryption enabled for disk: $disk_name."
 
-        # Get data disk IDs
-        data_disk_ids=$(az vm show -n "$vm_name" -g "$resource_group" --subscription "$subscription_id" --query "storageProfile.dataDisks[].managedDisk.id" -o tsv)
-
-        # Deallocate and detach data disks
-        echo "Deallocating and detaching data disks..."
-        for disk_id in $data_disk_ids; do
-            az disk update --ids "$disk_id" --resource-group "$resource_group" --subscription "$subscription_id" --set osType=None
-            az vm disk detach --name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id" --disk "$disk_id"
+            # Check encryption type for the disk
+            check_encryption_type "$disk_name"
         done
-        echo "Data disks deallocated and detached successfully."
 
-        # Enable double encryption for OS disk
-        echo "Enabling double encryption for OS disk..."
-        az disk encryption set --resource-group "$resource_group" --subscription "$subscription_id" --name "$os_disk_id" \
-            --disk-encryption-set "$disk_encryption_set_id" --key-vault "$key_vault_id"
-        echo "Double encryption enabled for OS disk."
-
-        # Enable double encryption for data disks
-        echo "Enabling double encryption for data disks..."
-        for disk_id in $data_disk_ids; do
-            az disk encryption set --resource-group "$resource_group" --subscription "$subscription_id" --name "$disk_id" \
-                --disk-encryption-set "$disk_encryption_set_id" --key-vault "$key_vault_id"
-        done
-        echo "Double encryption enabled for data disks."
-
-        # Reattach and start the VM
-        echo "Reattaching OS disk..."
-        az vm update --name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id" --set storageProfile.osDisk.managedDisk.id="$os_disk_id"
-        echo "OS disk reattached successfully."
-
-        echo "Reattaching data disks..."
-        for disk_id in $data_disk_ids; do
-            az vm disk attach --vm-name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id" --disk "$disk_id"
-        done
-        echo "Data disks reattached successfully."
+        # Start the VM
 
         echo "Starting VM..."
         az vm start --name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id"
