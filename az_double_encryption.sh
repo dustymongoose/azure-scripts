@@ -15,20 +15,6 @@ is_vm_stopped() {
     [[ "$status" == "PowerState/deallocated" ]] || [[ "$status" == "PowerState/stopped" ]]
 }
 
-# Function to check if all disks are encrypted with the specified type
-are_all_disks_encrypted() {
-    local disks_encrypted=1
-    local disk_names="$1"
-    for disk_name in $disk_names; do
-        local encryption_status=$(az disk show --name "$disk_name" --resource-group "$resource_group" --query "encryption.type == 'EncryptionAtRestWithCustomerKey'" -o tsv)
-        if [ -z "$encryption_status" ]; then
-            disks_encrypted=0
-            break
-        fi
-    done
-    return $disks_encrypted
-}
-
 # Function to check encryption status for a disk
 check_encryption_type() {
     local disk_name="$1"
@@ -40,11 +26,6 @@ check_encryption_type() {
 while IFS= read -r vm_name; do
     (
         echo "Processing VM: $vm_name"
-
-        # Check if all disks are already encrypted
-        if are_all_disks_encrypted "$vm_name"; then
-            echo "All disks are already encrypted with EncryptionAtRestWithCustomerKey. Skipping deallocation of VM."
-        else
         
         # Power off the VM first
         echo "Stopping VM..."
@@ -85,7 +66,6 @@ while IFS= read -r vm_name; do
         echo "Starting VM..."
         az vm start --name "$vm_name" --resource-group "$resource_group" --subscription "$subscription_id"
         echo "VM started successfully."
-        fi
     ) &
 done < "$vm_list_file"
 
