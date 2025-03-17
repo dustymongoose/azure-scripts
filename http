@@ -1,0 +1,44 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: http-version-restriction
+  namespace: YOUR_NAMESPACE
+spec:
+  workloadSelector:
+    labels:
+      app: YOUR_WORKLOAD_NAME  # Replace with your workload's app label
+  configPatches:
+    # Patch for inbound HTTP connection manager
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.router
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            
+    # Configure HTTP protocol options to only allow HTTP/1.1
+    - applyTo: NETWORK_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+      patch:
+        operation: MERGE
+        value:
+          typed_config:
+            "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+            http_protocol_options:
+              accept_http_10: false
+              default_host_for_http_10: ""
+            http2_protocol_options:
+              allow_connect: false
+              max_concurrent_streams: 0  # Effectively disables HTTP/2 Share Istio EnvoyFilter for HTTP/1.1 Only
